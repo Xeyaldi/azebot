@@ -1,62 +1,81 @@
 import os
 import telebot
+import time
+import threading
 import requests
-import json
+from telebot import types
 
-# Heroku-dan Tokeni oxuyuruq
+# Heroku Config Vars (Bunları Heroku-da mütləq qeyd et)
 TOKEN = os.getenv('BOT_TOKEN')
+TMDB_KEY = os.getenv('TMDB_API_KEY') 
 bot = telebot.TeleBot(TOKEN)
 
-# Variant yaradan funksiya (Eyni qalır)
-def generate_variants(base_username):
-    variants = [base_username, f"{base_username}06", f"{base_username}_", f"{base_username}."]
-    return list(set(variants))
+# Mesajları 60 saniyə sonra silən funksiya
+def auto_delete(chat_id, message_id, seconds=60):
+    time.sleep(seconds)
+    try:
+        bot.delete_message(chat_id, message_id)
+    except:
+        pass
 
 @bot.message_handler(commands=['start'])
-def start(message):
-    bot.send_message(message.chat.id, "🕵️‍♂️ **XEYAL OSINT v3.1**\n\nKomanda: `/smartfind [username]`", parse_mode='Markdown')
+def send_welcome(message):
+    welcome_text = (
+        "🎬 **Xeyal Film v4.5 (API Powered)**\n\n"
+        "İstədiyiniz film və ya serialın adını yazın.\n"
+        "Mən dünyanın ən böyük bazalarından (TMDB & Vidsrc) tapıb gətirəcəm.\n\n"
+        "🛡 **Gizlilik:** Mesajlar 1 dəqiqə sonra silinir."
+    )
+    msg = bot.send_message(message.chat.id, welcome_text, parse_mode='Markdown')
+    # Start mesajlarını 30 saniyə sonra silirik
+    threading.Thread(target=auto_delete, args=(message.chat.id, msg.message_id, 30)).start()
+    threading.Thread(target=auto_delete, args=(message.chat.id, message.message_id, 30)).start()
 
-@bot.message_handler(commands=['smartfind'])
-def smart_find_user(message):
+@bot.message_handler(func=lambda message: True)
+def search_media(message):
+    query = message.text
+    # 1. TMDB API ilə filmi axtarırıq (Ağıllı Axtarış)
+    search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={query}&language=tr-TR"
+    
     try:
-        base_username = message.text.split()[1]
-        variants = generate_variants(base_username)
-        
-        bot.send_message(message.chat.id, f"🔍 `{base_username}` üçün {len(variants)} variant yoxlanılır...")
-        
-        all_results = []
-        
-        # Ən populyar saytları birbaşa yoxlayaq (Sherlock xətası verməsin deyə)
-        platforms = {
-            "Instagram": "https://www.instagram.com/{}",
-            "GitHub": "https://github.com/{}",
-            "TikTok": "https://www.tiktok.com/@{}",
-            "Twitter": "https://twitter.com/{}",
-            "Pinterest": "https://www.pinterest.com/{}/",
-            "Telegram": "https://t.me/{}"
-        }
+        res = requests.get(search_url).json()
+        if not res.get('results'):
+            bot.reply_to(message, "❌ Təəssüf ki, bu adla heç bir film tapılmadı.")
+            return
 
-        for nick in variants:
-            found_for_nick = []
-            for name, url_template in platforms.items():
-                url = url_template.format(nick)
-                try:
-                    # 5 saniyə gözlə, əgər sayt açılsa tapıldı sayılır
-                    r = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
-                    if r.status_code == 200:
-                        found_for_nick.append(f"✅ {name}: [Keçid]({url})")
-                except:
-                    continue
-            
-            if found_for_nick:
-                all_results.append(f"👤 **Ad:** `{nick}`\n" + "\n".join(found_for_nick))
+        data = res['results'][0]
+        m_type = data.get('media_type', 'movie')
+        title = data.get('title') or data.get('name')
+        tmdb_id = data.get('id')
+        poster = data.get('poster_path')
+        year = (data.get('release_date') or data.get('first_air_date') or "0000")[:4]
 
-        if all_results:
-            bot.send_message(message.chat.id, "\n\n---\n\n".join(all_results), parse_mode='Markdown', disable_web_page_preview=True)
+        # 2. Video API Linkləri (Vidsrc bazası)
+        if m_type == 'movie':
+            # Film üçün birbaşa TMDB ID ilə link qururuq (Ən dəqiq yol budur)
+            watch_url = f"https://vidsrc.to/embed/movie/{tmdb_id}"
         else:
-            bot.send_message(message.chat.id, "❌ Heç bir iz tapılmadı.")
+            # Serial üçün (Sezon 1, Bölüm 1 olaraq açılır)
+            watch_url = f"https://vidsrc.to/embed/tv/{tmdb_id}/1/1"
+
+        # Düymə
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(f"▶️ {title} ({year}) İzlə", url=watch_url))
+
+        caption = f"🍿 **Nəticə:** {title}\n📅 **İl:** {year}\n\n⚠️ _Bu mesaj 60 saniyə sonra silinəcək._"
+
+        if poster:
+            img_url = f"https://image.tmdb.org/t/p/w500{poster}"
+            sent_msg = bot.send_photo(message.chat.id, img_url, caption=caption, parse_mode='Markdown', reply_markup=markup)
+        else:
+            sent_msg = bot.send_message(message.chat.id, caption, parse_mode='Markdown', reply_markup=markup)
+
+        # 3. Avtomatik Silmə İşləri
+        threading.Thread(target=auto_delete, args=(message.chat.id, message.message_id, 60)).start()
+        threading.Thread(target=auto_delete, args=(message.chat.id, sent_msg.message_id, 60)).start()
 
     except Exception as e:
-        bot.reply_to(message, f"🚨 Xəta: {str(e)}")
+        print(f"Xəta: {e}")
+        bot.reply_to(message, "🚨 API bağlantısında xəta baş verdi.")
 
-bot.polling()
+bot.polling(none_stop=True)

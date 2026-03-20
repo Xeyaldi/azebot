@@ -1,81 +1,85 @@
 import os
 import telebot
-import time
-import threading
 import requests
 from telebot import types
 
-# Heroku Config Vars (Bunları Heroku-da mütləq qeyd et)
+# Heroku Config Vars-dan oxuyuruq
 TOKEN = os.getenv('BOT_TOKEN')
-TMDB_KEY = os.getenv('TMDB_API_KEY') 
+TMDB_KEY = os.getenv('TMDB_API_KEY')
 bot = telebot.TeleBot(TOKEN)
 
-# Mesajları 60 saniyə sonra silən funksiya
-def auto_delete(chat_id, message_id, seconds=60):
-    time.sleep(seconds)
-    try:
-        bot.delete_message(chat_id, message_id)
-    except:
-        pass
-
+# 1. Start Mesajı
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     welcome_text = (
-        "🎬 **Xeyal Film v4.5 (API Powered)**\n\n"
-        "İstədiyiniz film və ya serialın adını yazın.\n"
-        "Mən dünyanın ən böyük bazalarından (TMDB & Vidsrc) tapıb gətirəcəm.\n\n"
-        "🛡 **Gizlilik:** Mesajlar 1 dəqiqə sonra silinir."
+        "🎬 **Xeyal Film & Serial Botuna Xoş Gəldiniz!**\n\n"
+        "Mən sizə istənilən film və serialı tapmaqda kömək edəcəyəm.\n\n"
+        "📖 **Təlimat:**\n"
+        "1. Filmin adını bura yazın.\n"
+        "2. Qarşınıza çıxan 5 nəticədən birini seçin.\n"
+        "3. 'Yüklə və İzlə' düyməsinə basaraq videonu açın.\n\n"
+        "🍿 *Xoş izləmələr!*"
     )
-    msg = bot.send_message(message.chat.id, welcome_text, parse_mode='Markdown')
-    # Start mesajlarını 30 saniyə sonra silirik
-    threading.Thread(target=auto_delete, args=(message.chat.id, msg.message_id, 30)).start()
-    threading.Thread(target=auto_delete, args=(message.chat.id, message.message_id, 30)).start()
+    bot.send_message(message.chat.id, welcome_text, parse_mode='Markdown')
 
+# 2. Axtarış və Top 5 Nəticənin Düymə ilə Göstərilməsi
 @bot.message_handler(func=lambda message: True)
-def search_media(message):
+def search_top_5(message):
     query = message.text
-    # 1. TMDB API ilə filmi axtarırıq (Ağıllı Axtarış)
     search_url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={query}&language=tr-TR"
     
     try:
         res = requests.get(search_url).json()
-        if not res.get('results'):
-            bot.reply_to(message, "❌ Təəssüf ki, bu adla heç bir film tapılmadı.")
+        results = res.get('results', [])[:5] # İlk 5 nəticəni götürürük
+
+        if not results:
+            bot.reply_to(message, "❌ Təəssüf ki, heç bir nəticə tapılmadı. Adı düzgün yazdığınızdan əmin olun.")
             return
 
-        data = res['results'][0]
-        m_type = data.get('media_type', 'movie')
-        title = data.get('title') or data.get('name')
-        tmdb_id = data.get('id')
-        poster = data.get('poster_path')
-        year = (data.get('release_date') or data.get('first_air_date') or "0000")[:4]
-
-        # 2. Video API Linkləri (Vidsrc bazası)
-        if m_type == 'movie':
-            # Film üçün birbaşa TMDB ID ilə link qururuq (Ən dəqiq yol budur)
-            watch_url = f"https://vidsrc.to/embed/movie/{tmdb_id}"
-        else:
-            # Serial üçün (Sezon 1, Bölüm 1 olaraq açılır)
-            watch_url = f"https://vidsrc.to/embed/tv/{tmdb_id}/1/1"
-
-        # Düymə
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton(f"▶️ {title} ({year}) İzlə", url=watch_url))
+        for item in results:
+            title = item.get('title') or item.get('name')
+            year = (item.get('release_date') or item.get('first_air_date') or "0000")[:4]
+            media_type = item.get('media_type', 'movie')
+            tmdb_id = item.get('id')
+            
+            # Düyməyə basanda id və tip göndərilir
+            callback_data = f"select_{media_type}_{tmdb_id}"
+            markup.add(types.InlineKeyboardButton(text=f"🎬 {title} ({year})", callback_data=callback_data))
 
-        caption = f"🍿 **Nəticə:** {title}\n📅 **İl:** {year}\n\n⚠️ _Bu mesaj 60 saniyə sonra silinəcək._"
-
-        if poster:
-            img_url = f"https://image.tmdb.org/t/p/w500{poster}"
-            sent_msg = bot.send_photo(message.chat.id, img_url, caption=caption, parse_mode='Markdown', reply_markup=markup)
-        else:
-            sent_msg = bot.send_message(message.chat.id, caption, parse_mode='Markdown', reply_markup=markup)
-
-        # 3. Avtomatik Silmə İşləri
-        threading.Thread(target=auto_delete, args=(message.chat.id, message.message_id, 60)).start()
-        threading.Thread(target=auto_delete, args=(message.chat.id, sent_msg.message_id, 60)).start()
+        bot.send_message(message.chat.id, f"🔍 '{query}' üçün ən uyğun nəticələr:", reply_markup=markup)
 
     except Exception as e:
-        print(f"Xəta: {e}")
-        bot.reply_to(message, "🚨 API bağlantısında xəta baş verdi.")
+        bot.send_message(message.chat.id, "🚨 API xətası baş verdi.")
+
+# 3. Seçilən Filmin Detalları və Yükləmə Linki
+@bot.callback_query_handler(func=lambda call: call.data.startswith('select_'))
+def get_movie_details(call):
+    # Data parçalanır: select_movie_12345
+    _, m_type, tmdb_id = call.data.split('_')
+    
+    # Detalları çəkmək üçün TMDB-yə yenidən sorğu
+    detail_url = f"https://api.themoviedb.org/3/{m_type}/{tmdb_id}?api_key={TMDB_KEY}&language=tr-TR"
+    data = requests.get(detail_url).json()
+    
+    title = data.get('title') or data.get('name')
+    overview = data.get('overview', 'Məlumat yoxdur.')[:200] + "..."
+    
+    # Video bazası linki (Arxa fonda yükləyib açan pleyer)
+    if m_type == 'movie':
+        watch_url = f"https://vidsrc.to/embed/movie/{tmdb_id}"
+    else:
+        watch_url = f"https://vidsrc.to/embed/tv/{tmdb_id}/1/1"
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton(text="📥 YÜKLƏ VƏ İZLƏ (MP4)", url=watch_url))
+
+    caption = f"✅ **{title}** seçildi.\n\n📝 **Haqqında:** {overview}\n\n🎬 Videonu aşağıdakı düymədən dərhal açın:"
+
+    poster = data.get('poster_path')
+    if poster:
+        bot.send_photo(call.message.chat.id, f"https://image.tmdb.org/t/p/w500{poster}", caption=caption, reply_markup=markup, parse_mode='Markdown')
+    else:
+        bot.send_message(call.message.chat.id, caption, reply_markup=markup, parse_mode='Markdown')
 
 bot.polling(none_stop=True)

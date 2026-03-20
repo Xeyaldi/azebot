@@ -1,80 +1,62 @@
 import os
 import telebot
-import subprocess # Sherlock-u çağırmaq üçün
-import time
+import requests
+import json
 
 # Heroku-dan Tokeni oxuyuruq
 TOKEN = os.getenv('BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
-# --- Ağıllı Variant Yaradan Funksiya ---
+# Variant yaradan funksiya (Eyni qalır)
 def generate_variants(base_username):
-    # Bu siyahı hədəfin istifadə edə biləcəyi ehtimal olunan ləqəbləri yaradır
-    variants = [
-        base_username,
-        f"{base_username}06",    # Doğum ili və ya rayon kodu təxmini
-        f"{base_username}2006",
-        f"{base_username}_",      
-        f"{base_username}.",      
-        f"{base_username}_official",
-        f"iam{base_username}",
-        f"real{base_username}"
-    ]
-    # Təkrarları silirik və siyahını qaytarırıq
+    variants = [base_username, f"{base_username}06", f"{base_username}_", f"{base_username}."]
     return list(set(variants))
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.send_message(message.chat.id, 
-        "💀 **SHERLOCK SMART ENGINE v3.0 ACTİVE**\n\n"
-        "İstifadəçi adını yaz, 400+ saytda və 10-dan çox variantda axtarım:\n\n"
-        "👉 `/smartfind [username]`", 
-        parse_mode='Markdown')
+    bot.send_message(message.chat.id, "🕵️‍♂️ **XEYAL OSINT v3.1**\n\nKomanda: `/smartfind [username]`", parse_mode='Markdown')
 
 @bot.message_handler(commands=['smartfind'])
 def smart_find_user(message):
     try:
         base_username = message.text.split()[1]
-        
-        # Ağıllı variantları yaradırıq
         variants = generate_variants(base_username)
         
-        start_msg = bot.send_message(message.chat.id, 
-            f"🧠 **Ağıllı Analiz Başladı...**\n`{base_username}` üçün {len(variants)} fərqli variant (ləqəb) yoxlanılır.\n\n"
-            "(Bu bir az vaxt ala bilər, zəhmət olmasa gözləyin)", parse_mode='Markdown')
+        bot.send_message(message.chat.id, f"🔍 `{base_username}` üçün {len(variants)} variant yoxlanılır...")
         
-        all_found_links = []
+        all_results = []
         
+        # Ən populyar saytları birbaşa yoxlayaq (Sherlock xətası verməsin deyə)
+        platforms = {
+            "Instagram": "https://www.instagram.com/{}",
+            "GitHub": "https://github.com/{}",
+            "TikTok": "https://www.tiktok.com/@{}",
+            "Twitter": "https://twitter.com/{}",
+            "Pinterest": "https://www.pinterest.com/{}/",
+            "Telegram": "https://t.me/{}"
+        }
+
         for nick in variants:
-            # Hər variant üçün Sherlock-u işə salırıq
-            # --timeout 1: sayt cavab verməsə çox gözləməsin
-            cmd = f"sherlock {nick} --timeout 1 --print-found"
+            found_for_nick = []
+            for name, url_template in platforms.items():
+                url = url_template.format(nick)
+                try:
+                    # 5 saniyə gözlə, əgər sayt açılsa tapıldı sayılır
+                    r = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+                    if r.status_code == 200:
+                        found_for_nick.append(f"✅ {name}: [Keçid]({url})")
+                except:
+                    continue
             
-            # Prosesi başladırıq
-            process = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout, _ = process.communicate()
+            if found_for_nick:
+                all_results.append(f"👤 **Ad:** `{nick}`\n" + "\n".join(found_for_nick))
 
-            if stdout:
-                # Tapılan linkləri təmizləyib siyahıya əlavə edirik
-                found_links = [line for line in stdout.split('\n') if "http" in line]
-                if found_links:
-                    all_found_links.append(f"👤 **Ad:** `{nick}`\n" + "\n".join(found_links))
-        
-        if all_found_links:
-            final_text = "\n\n---\n\n".join(all_found_links)
-            
-            # Mesaj çox uzundursa, hissə-hissə göndər (Telegram mesaj limiti 4096 simvoldur)
-            if len(final_text) > 4000:
-                for i in range(0, len(final_text), 4000):
-                    bot.send_message(message.chat.id, final_text[i:i+4000], disable_web_page_preview=True)
-            else:
-                bot.send_message(message.chat.id, f"🎯 **Tapılan Hesablar:**\n\n{final_text}", parse_mode='Markdown', disable_web_page_preview=True)
+        if all_results:
+            bot.send_message(message.chat.id, "\n\n---\n\n".join(all_results), parse_mode='Markdown', disable_web_page_preview=True)
         else:
-            bot.send_message(message.chat.id, "❌ Heç bir variantda nəticə tapılmadı.")
+            bot.send_message(message.chat.id, "❌ Heç bir iz tapılmadı.")
 
-    except IndexError:
-        bot.reply_to(message, "⚠️ Zəhmət olmasa istifadəçi adını yazın. Məsələn: `/smartfind xeyaldi`", parse_mode='Markdown')
     except Exception as e:
-        bot.reply_to(message, f"🚨 Sistem xətası: {str(e)}")
+        bot.reply_to(message, f"🚨 Xəta: {str(e)}")
 
 bot.polling()

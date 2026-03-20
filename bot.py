@@ -1,72 +1,80 @@
 import os
 import telebot
-import requests
+import subprocess # Sherlock-u çağırmaq üçün
+import time
 
-# Heroku-dan gələcək Tokeni oxuyuruq
+# Heroku-dan Tokeni oxuyuruq
 TOKEN = os.getenv('BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
-# Start Mesajı
+# --- Ağıllı Variant Yaradan Funksiya ---
+def generate_variants(base_username):
+    # Bu siyahı hədəfin istifadə edə biləcəyi ehtimal olunan ləqəbləri yaradır
+    variants = [
+        base_username,
+        f"{base_username}06",    # Doğum ili və ya rayon kodu təxmini
+        f"{base_username}2006",
+        f"{base_username}_",      
+        f"{base_username}.",      
+        f"{base_username}_official",
+        f"iam{base_username}",
+        f"real{base_username}"
+    ]
+    # Təkrarları silirik və siyahını qaytarırıq
+    return list(set(variants))
+
 @bot.message_handler(commands=['start'])
-def send_welcome(message):
-    user_first_name = message.from_user.first_name
-    welcome_text = (
-        f"🕵️‍♂️ **Salam, {user_first_name}!**\n\n"
-        "Mən **Xeyal OSINT Bot**-am. Rəqəmsal dünyada gizli məlumatları tapmaq üçün proqramlaşdırılmışam.\n\n"
-        "🔍 **Nələri edə bilərəm?**\n"
-        "• `/search [username]` — Sosial şəbəkələrdə axtarış\n"
-        "• `/ip [ip_adresi]` — IP haqqında məlumat\n"
-        "• `/info` — Bot haqqında məlumat\n\n"
-        "⚡ *Diqqət:* Bu bot sırf təhsil və təhlükəsizlik məqsədilə yaradılıb."
-    )
-    bot.reply_to(message, welcome_text, parse_mode='Markdown')
+def start(message):
+    bot.send_message(message.chat.id, 
+        "💀 **SHERLOCK SMART ENGINE v3.0 ACTİVE**\n\n"
+        "İstifadəçi adını yaz, 400+ saytda və 10-dan çox variantda axtarım:\n\n"
+        "👉 `/smartfind [username]`", 
+        parse_mode='Markdown')
 
-# Username Axtarışı
-@bot.message_handler(commands=['search'])
-def search_user(message):
+@bot.message_handler(commands=['smartfind'])
+def smart_find_user(message):
     try:
-        username = message.text.split()[1]
-        msg = bot.send_message(message.chat.id, f"🔎 `{username}` axtarılır...", parse_mode='Markdown')
+        base_username = message.text.split()[1]
         
-        platforms = {
-            "GitHub": f"https://github.com/{username}",
-            "Instagram": f"https://www.instagram.com/{username}",
-            "TikTok": f"https://www.tiktok.com/@{username}",
-            "Twitter": f"https://twitter.com/{username}"
-        }
+        # Ağıllı variantları yaradırıq
+        variants = generate_variants(base_username)
         
-        results = []
-        for name, url in platforms.items():
-            res = requests.get(url, timeout=5)
-            if res.status_code == 200:
-                results.append(f"✅ {name}: [Keçid et]({url})")
-            else:
-                results.append(f"❌ {name}: Tapılmadı")
+        start_msg = bot.send_message(message.chat.id, 
+            f"🧠 **Ağıllı Analiz Başladı...**\n`{base_username}` üçün {len(variants)} fərqli variant (ləqəb) yoxlanılır.\n\n"
+            "(Bu bir az vaxt ala bilər, zəhmət olmasa gözləyin)", parse_mode='Markdown')
         
-        bot.edit_message_text("\n".join(results), message.chat.id, msg.message_id, parse_mode='Markdown', disable_web_page_preview=True)
-    except IndexError:
-        bot.reply_to(message, "⚠️ Zəhmət olmasa istifadəçi adını yazın. Məsələn: `/search xeyaldi`", parse_mode='Markdown')
-
-# IP Axtarışı
-@bot.message_handler(commands=['ip'])
-def ip_info(message):
-    try:
-        ip = message.text.split()[1]
-        data = requests.get(f"http://ip-api.com/json/{ip}").json()
+        all_found_links = []
         
-        if data['status'] == 'success':
-            response = (
-                f"🌍 **IP Analizi:** `{ip}`\n\n"
-                f"📍 Ölkə: {data['country']}\n"
-                f"🏙️ Şəhər: {data['city']}\n"
-                f"📶 Provayder: {data['isp']}\n"
-                f"🗺️ Koordinat: {data['lat']}, {data['lon']}"
-            )
-        else:
-            response = "❌ IP ünvanı yanlışdır və ya məlumat tapılmadı."
+        for nick in variants:
+            # Hər variant üçün Sherlock-u işə salırıq
+            # --timeout 1: sayt cavab verməsə çox gözləməsin
+            cmd = f"sherlock {nick} --timeout 1 --print-found"
             
-        bot.reply_to(message, response, parse_mode='Markdown')
+            # Prosesi başladırıq
+            process = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout, _ = process.communicate()
+
+            if stdout:
+                # Tapılan linkləri təmizləyib siyahıya əlavə edirik
+                found_links = [line for line in stdout.split('\n') if "http" in line]
+                if found_links:
+                    all_found_links.append(f"👤 **Ad:** `{nick}`\n" + "\n".join(found_links))
+        
+        if all_found_links:
+            final_text = "\n\n---\n\n".join(all_found_links)
+            
+            # Mesaj çox uzundursa, hissə-hissə göndər (Telegram mesaj limiti 4096 simvoldur)
+            if len(final_text) > 4000:
+                for i in range(0, len(final_text), 4000):
+                    bot.send_message(message.chat.id, final_text[i:i+4000], disable_web_page_preview=True)
+            else:
+                bot.send_message(message.chat.id, f"🎯 **Tapılan Hesablar:**\n\n{final_text}", parse_mode='Markdown', disable_web_page_preview=True)
+        else:
+            bot.send_message(message.chat.id, "❌ Heç bir variantda nəticə tapılmadı.")
+
     except IndexError:
-        bot.reply_to(message, "⚠️ IP ünvanını yazın. Məsələn: `/ip 8.8.8.8`", parse_mode='Markdown')
+        bot.reply_to(message, "⚠️ Zəhmət olmasa istifadəçi adını yazın. Məsələn: `/smartfind xeyaldi`", parse_mode='Markdown')
+    except Exception as e:
+        bot.reply_to(message, f"🚨 Sistem xətası: {str(e)}")
 
 bot.polling()
